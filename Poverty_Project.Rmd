@@ -1,0 +1,481 @@
+---
+title: "Poverty Project"
+author: "Nathaniel Zbaida"
+date: "2022-11-12"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+\
+Informally, the goal of the regression discontinuity research design is to isolate the treatment effect by running
+local linear regression on data close to predetermined cutoffs.The ideal situation for establishing a causal relationship is by running a randomized experiment in which all endogenous effects can be controlled for. However, in many cases such as analyzing national employment, running a randomized experiment is both not feasible and arguably immoral, so other methods of isolating the treatment effect must be utilized. In this case, the predetermined federal poverty limits serve as natural cutoffs and by considering data points just above and just below these cutoffs, it is possible to accurately estimate the localized treatment effect of the poverty assistance program on employment. The main assumption of regression discontinuity is that observations just below a given cutoff and just above a given cutoff are truly comparable, i.e., by only considering observations in the immediate neighborhood of these cutoffs, the potential affects of other factors have been accounted for and as a result the treatment effect can be accurately isolated.In this particular example, by looking at the employment of households just above and just below the federal poverty limits, we can ignore the effects of other potential factors such as education, experience, gender, industry, and ethnicity on employment, and instead, attribute any potential differences in employment to the poverty assistance program.\
+\
+2. Importing and Cleaning of Data\
+```{r, echo=FALSE}
+library(plyr)
+library(sandwich)
+library(lmtest)
+library(knitr)
+library(car)
+```
+
+```{r import and cleaning}
+#clearing environment of previous variables/values
+rm(list = ls())
+
+#inputting data
+setwd("C:/Users/natty/OneDrive/Documents")
+data <- read.csv("Sample_Poverty_Data.csv")
+
+#checking first 5 rows of data
+head(data)
+
+#creating fpl variable
+fpl <- c(12490, 16910, 21330, 25750)
+
+#creating runvar variable
+runvar1 <- data$inc2019[which(data$nhhld == 1)] - fpl[1]
+runvar2 <- data$inc2019[which(data$nhhld == 2)] - fpl[2]
+runvar3 <- data$inc2019[which(data$nhhld == 3)] - fpl[3]
+runvar4 <- data$inc2019[which(data$nhhld >= 4)] - fpl[4]
+runvar <- rep(NA,nrow(data))
+runvar[which(data$nhhld == 1)] <- runvar1
+runvar[which(data$nhhld == 2)] <- runvar2
+runvar[which(data$nhhld == 3)] <- runvar3
+runvar[which(data$nhhld >= 4)] <- runvar4
+
+#creating runvarbin variable
+runvarbin <-round_any(runvar,100)
+
+#creating D indicator variable
+D <- rep(NA,nrow(data))
+D[which(runvar > 0)] <- 1
+D[which(is.na(D))] <- 0
+
+#creating T indicator variable
+T <- rep(NA,nrow(data))
+T[which(data$pab2019 > 0)] <- 1
+T[which(is.na(T))] <- 0
+
+#adding new variables to data set
+data$runvar <- runvar
+data$runvarbin <- runvarbin
+data$D <- D
+data$T <- T
+head(data)
+
+#setting and filtering by bandwidth
+bandwidth <- 5000
+filtered <- data[which(abs(data$runvar) < bandwidth),]
+head(filtered)
+```
+\
+```{r first regressions and plots}
+#Regression with T as the dependent variable
+Treg <- lm(T ~ runvarbin + D + (runvarbin*D), data = filtered)
+summary(Treg)
+
+#clustered standard errors for T regression
+Tcoeffs_cl_T <- coeftest(Treg, vcov = vcovCL, cluster = ~runvarbin)
+Tcoeffs_cl_T
+
+#Regression with P as the dependent variable
+Preg <- lm(pab2019 ~ runvarbin + D + (runvarbin*D), data = filtered)
+summary(Preg)
+
+#clustered standard errors for P regression
+Tcoeffs_cl_P <- coeftest(Preg, vcov = vcovCL, cluster = ~runvarbin)
+Tcoeffs_cl_P
+```
+Intuitively, we would expect that households that fall below federal poverty lines will receive assistance and the the farther the household is below the poverty line, the more assistance they would receive. This is exactly the behavior we see in the models. In the first model, in which the indicator variable T is the dependent variable, we see that the value of beta is `r summary(Treg)$coeff[3,1]`. Meaning that if the value of the indicator variable D is 1 (the household has an income that exceeds the federal poverty line) and they are ineligible to receive federal poverty assistance, they will not receive federal poverty assistance. Similarly, in the second model, in which the variable pab2019 is the dependent variable, we see that the coefficients for the independent variables D and runvarbin x D are both negative.In particular, the coefficient of D is `r summary(Preg)$coeff[3,1]` and the coefficient of the interaction term runvarbin x D is `r summary(Preg)$coeff[4,1]`. This shows that if a household's income exceeds the federal poverty limit, their expected poverty assistance benefit payment would decrease by $`r -summary(Preg)$coeff[3,1]`, which would cancel their expected povery assistance payment of `r summary(Preg)$coeff[1,1]`, and that for households who's income exceeds the poverty limit, for every dollar by which their income exceeds the relevent federal poverty limit (rounded to the nearest $100), their expected poverty assistance benefit payment payment would decrease by $`r -summary(Preg)$coeff[4,1]`.
+```{r means and plots}
+#clustered means of T
+c1T <- mean(filtered$T[which(filtered$nhhld == 1)])
+c2T <- mean(filtered$T[which(filtered$nhhld == 2)])
+c3T <- mean(filtered$T[which(filtered$nhhld == 3)])
+c4T <- mean(filtered$T[which(filtered$nhhld >= 4)])
+
+#clustered means of pab2019
+c1pab <- mean(filtered$pab2019[which(filtered$nhhld == 1)])
+c2pab <- mean(filtered$pab2019[which(filtered$nhhld == 2)])
+c3pab <- mean(filtered$pab2019[which(filtered$nhhld == 3)])
+c4pab <- mean(filtered$pab2019[which(filtered$nhhld >= 4)])
+
+#creation of output table
+clusters <- c("Cluster 1 T mean", "Cluster 2 T mean", "Cluster 3 T mean", "Cluster 4 T mean", "Cluster 1 pab mean", "Cluster 2 pab mean", "Cluster 3 pab mean", "Cluster 4 pab mean")
+means <- c(c1T,c2T,c3T,c4T,c1pab,c2pab,c3pab,c4pab)
+clusteredmeans <- data.frame(clusters,means)
+kable(clusteredmeans, caption = "Means of T and pab2019 variables by cluster")
+
+#T vs Runvarbin
+plot(filtered$runvarbin,predict(Treg, newdata = filtered), xlab = "Income Relative to Federal Poverty Limit", ylab = "Prediction of Receiving Goverment Assistance", main = "Receiving Federal Poverty Assistance v.s. Relative Income")
+abline(h = c1T, col = "green")
+abline(h = c2T, col = "blue")
+abline(h = c3T, col = "red")
+abline(h = c4T, col = "orange")
+
+#pab2019 vs Runvarbin
+plot(filtered$pab2019,predict(Preg, newdata = filtered), xlab = "Income Relative to Federal Poverty Limit", ylab = "Prediction of Amount of Poverty Aid Received", main = "Amount of Federal Poverty Assistance  Received v.s. Relative Income")
+abline(h = c1pab, col = "green")
+abline(h = c2pab, col = "blue")
+abline(h = c3pab, col = "red")
+abline(h = c4pab, col = "orange")
+```
+\
+These results are consistent with our regression results. In both plots, the green line corresponds to the cluster around the $`r format(fpl[1], scientific = FALSE)` poverty limit, the blue line corresponds to the cluster around the $`r format(fpl[2], scientific = FALSE)` poverty limit, the red line corresponds to the cluster around the $`r format(fpl[3], scientific = FALSE)` poverty limit, and the orange line corresponds to the cluster around the $`r format(fpl[4], scientific = FALSE)` poverty limit. In the first plot, we see that only households below the federal poverty limits receive assistance and the lower the corresponding cluster's income level, the more likely they are to receive assistance. In the second plot, it is is harder to see, but as household's increases relative to their corresponding poverty limit, their expected poverty assistance payment decreases. Further, larger households with higher federal poverty limits had higher average payments.\
+\
+```{r employment regression}
+#regression with employment as the dependent variable
+Ereg <- lm(emp2020 ~ runvarbin + D + (runvarbin*D), data = filtered)
+summary(Ereg)
+
+#clustered standard errors for employment regression
+Tcoeffs_cl_E <- coeftest(Ereg, vcov = vcovCL, cluster = ~runvarbin)
+Tcoeffs_cl_E
+
+#clustered means of employment
+c1emp <- mean(filtered$emp2020[which(filtered$nhhld == 1)])
+c2emp <- mean(filtered$emp2020[which(filtered$nhhld == 2)])
+c3emp <- mean(filtered$emp2020[which(filtered$nhhld == 3)])
+c4emp <- mean(filtered$emp2020[which(filtered$nhhld >= 4)])
+
+#creation of output table
+clusters2 <- c("Cluster 1 Employment mean", "Cluster 2 Employment mean", "Cluster 3 Employment mean", "Cluster 4 Employment mean")
+means2 <- c(c1emp,c2emp,c3emp,c4emp)
+clusteredmeans2 <- data.frame(clusters2,means2)
+kable(clusteredmeans2, caption = "Means of emp2020 variables by cluster")
+
+#Employment vs Runvarbin
+plot(filtered$runvarbin,predict(Ereg, newdata = filtered), xlab = "Income Relative to Federal Poverty Limit", ylab = "Prediction of Employment", main = "Employment v.s. Relative Income")
+abline(h = c1emp, col = "green")
+abline(h = c2emp, col = "blue")
+abline(h = c3emp, col = "red")
+abline(h = c4emp, col = "orange")
+
+#regression with employment as the dependent variable and pab2019 IV
+Ereg2 <- lm(emp2020 ~ runvarbin + pab2019 + (runvarbin*D), data = filtered)
+summary(Ereg2)
+
+#clustered standard errors for the second employment regression
+Tcoeffs_cl_E2 <- coeftest(Ereg2, vcov = vcovCL, cluster = ~runvarbin)
+Tcoeffs_cl_E2
+```
+\
+Based on the regression, survey respondents from households just below federal poverty limits are more likely to be employed. This can be seen in the coefficient of the indicator variable D, which has a value of `r summary(Ereg)$coeff[3,1]`. As the indicator variable D takes on the value 1 when the household exceeds their corresponding federal poverty limit, this coefficient can be interpreted as respondents from households who exceed the federal poverty limit being `r -summary(Ereg)$coeff[3,1]*100`% less likely to be employed in 2020.\
+\
+The graph is consistent with the regression, as we can see the same abrupt `r -summary(Ereg)$coeff[3,1]*100`% drop in expected employment on the graph.\
+\
+The coefficient of pab2019 in the instrumental variable regression is `r summary(Ereg2)$coeff[3,1]`. Thus, for every additional 1,000 dollars of benefits received, we would expect the likelihood of employment to increase by `r summary(Ereg2)$coeff[3,1]*100000`%. This is consistent with the results seen in the reduced form estimate, in which the likelihood of the survey respondent being employed decreased by `r format(-summary(Ereg)$coeff[2,1]*100, scientific = FALSE)`% for every dollar by which household income increased among households below the federal poverty limits and `r format(-summary(Ereg)$coeff[4,1]*100, scientific = FALSE)`% for every dollar by which household income increased among households above the federal poverty limits. Further, we can see this in the `r -summary(Ereg)$coeff[3,1]*100`% drop in expected employment between households receiving poverty aids and those who  did not.\
+\
+```{r frequency}
+#creating nobs variable
+bin1 <- rep(length(which(filtered$nhhld == 1)),length(which(filtered$nhhld == 1)))
+bin2 <- rep(length(which(filtered$nhhld == 2)),length(which(filtered$nhhld == 2)))
+bin3 <- rep(length(which(filtered$nhhld == 3)),length(which(filtered$nhhld == 3)))
+bin4 <- rep(length(which(filtered$nhhld >= 4)),length(which(filtered$nhhld >= 4)))
+nobs <- rep(NA,nrow(filtered))
+nobs[which(filtered$nhhld == 1)] <- bin1
+nobs[which(filtered$nhhld == 2)] <- bin2
+nobs[which(filtered$nhhld == 3)] <- bin3
+nobs[which(filtered$nhhld >= 4)] <- bin4
+filtered$nobs <- nobs
+
+#observations regression
+Oreg <- lm(nobs ~ poly(runvarbin,3) + D + (poly(runvarbin,3) * D), data = filtered)
+summary(Oreg)
+
+#creation of output table
+clusters3 <- c("Cluster 1", "Cluster 2", "Cluster 3", "Cluster 4")
+observations <- c(length(which(filtered$nhhld == 1)),length(which(filtered$nhhld == 2)),length(which(filtered$nhhld == 3)),length(which(filtered$nhhld >= 4)))
+table3 <- data.frame(clusters3,observations)
+kable(table3, caption = "Observations in Each Cluster")
+
+#histogram of predicted number of observations with vertical lines showing the actual number of observations in each of the four clusters
+hist(predict(Oreg, newdata = filtered))
+abline(v = length(which(filtered$nhhld == 1)), col = "green")
+abline(v = length(which(filtered$nhhld == 2)), col = "blue")
+abline(v = length(which(filtered$nhhld == 3)), col = "red")
+abline(v = length(which(filtered$nhhld >= 4)), col = "orange")
+
+#plot of predicted number of observations and runvarbin variable as the remainder of the question asks about a potential relationship the number of observations and relative income
+plot(filtered$runvarbin, predict(Oreg, newdata = filtered), xlab = "Income Relative to Federal Poverty Limit", ylab = "Predicted Number of Observations in each Cluster", main = "Predicted Obvservations per Cluster vs Relative Income")
+```
+\
+Based on standard OLS standard errors, the coefficient of D is not significant in the regression with the number of observations as the dependent variable. The P-value of the coefficient for D is `r summary(Oreg)$coeff[5,4]`.\
+\
+If households could manipulate the running variable to qualify for treatment, we would expect that houses right on the federal poverty limits would do everything they could to be below their corresponding federal poverty limit and qualify for assistance. Graphically, there is some evidence of this behavior, as we see a relative maximum in predicted number of observations corresponding to household incomes just below federal poverty limits.\
+\
+```{r predicted employment}
+#creating dummy variables (house1 indicating household size of 1,house2 indicating household size of 2,etc.)
+house1 <- rep(NA, nrow(filtered))
+house2 <- rep(NA, nrow(filtered))
+house3 <- rep(NA, nrow(filtered))
+house1[which(filtered$nhhld == 1)] <- 1
+house1[which(is.na(house1))] <- 0
+house2[which(filtered$nhhld == 2)] <- 1
+house2[which(is.na(house2))] <- 0
+house3[which(filtered$nhhld == 3)] <- 1
+house3[which(is.na(house3))] <- 0
+filtered$house1 <- house1
+filtered$house2 <- house2
+filtered$house3 <- house3
+
+#regression to predict emloyment
+EPredReg <- lm(emp2020 ~ poly(age,3) + female + college + house1 + house2 + house3 + poly(inc2019,3), data = filtered)
+predemp <- predict(EPredReg, newdata = filtered)
+filtered$predemp <- predemp
+
+#reduced form regression with predicted employment instead of actual employment data
+Ereg3 <- lm(predemp ~ runvarbin + D + (runvarbin*D), data = filtered)
+summary(Ereg3)
+
+#clustered standard error
+Tcoeffs_cl_E3 <- coeftest(Ereg3, vcov = vcovCL, cluster = ~runvarbin)
+Tcoeffs_cl_E3
+Tcoeffs_cl_E
+
+#predicted employment values from the 2 models
+e1pred <- predict(Ereg, newdata = filtered)
+e3pred <- predict(Ereg3, newdata = filtered)
+
+#F test for equal variances
+var.test(e1pred,e3pred,alternative = "two.sided")
+
+#two-sided t test to test the equality of the means of the 2 predictions
+t.test(e1pred, e3pred, alternative = "two.sided")
+
+#IV regression with predicted employment instead of actual employment data
+Ereg4 <- lm(predemp ~ runvarbin + pab2019 + (runvarbin*D), data = filtered)
+summary(Ereg4)
+
+#clustered standard error
+Tcoeffs_cl_E4 <- coeftest(Ereg4, vcov = vcovCL, cluster = ~runvarbin)
+Tcoeffs_cl_E4
+Tcoeffs_cl_E2
+
+#predicted employment values from the 2 models
+e2pred <- predict(Ereg2, newdata = filtered)
+e4pred <- predict(Ereg4, newdata = filtered)
+
+#F test for equal variances
+var.test(e2pred,e4pred,alternative = "two.sided")
+
+#two-sided t test to test the equality of the means of the 2 predictions
+t.test(e2pred, e4pred, alternative = "two.sided")
+```
+\
+When comparing the means of the predicted employment levels from the models that regressed employment on our running variable, the indicator variable D, and the interaction term between D and our running variable or employment on our running variable, value of poverty assistance payment, and the interaction term between D and our running variable, with the true employment data versus the predicted employment data, there is no evidence to suggest that they are significantly different. This lends credibility to the idea that observations in neighborhoods of the federal poverty limits are truly comparable, even when accounting for potential confounding variables including age, gender, education, household size, and income. This is also in line with the assumptions of the regression discontinuity model, namely that by looking only at data in the immediate vicinity of cutoff values, other potential confounding variables have been accounted for and in turn, we can establish a causal relationship attributing changes in data to a given treatment. This supports the idea that the reduction in expected employment is directly a result of the poverty assistance payments.\
+\
+```{r polynomial sensitivity}
+#regression predicting employment with cubic of runvarbin variable in independent variables
+Ereg5 <- lm(emp2020 ~ poly(runvarbin,3) + D + (poly(runvarbin,3)*D), data = filtered)
+summary(Ereg5)
+
+#regression predicting employment with cubic of runvarbin variable in independent variables and predicted employment levels as the response variable
+Ereg6 <- lm(predemp ~ poly(runvarbin,3) + D + (poly(runvarbin,3)*D), data = filtered)
+summary(Ereg6)
+
+#predicted employment values from the 2 models
+e5pred <- predict(Ereg5, newdata = filtered)
+e6pred <- predict(Ereg6, newdata = filtered)
+
+#F test for equal variances
+var.test(e5pred,e6pred,alternative = "two.sided")
+
+#two-sided t test to test the equality of the means of the 2 predictions
+t.test(e5pred, e6pred, alternative = "two.sided")
+
+#regression predicting employment with quadratic of runvarbin variable in independent variables
+Ereg7 <- lm(emp2020 ~ poly(runvarbin,2) + D + (poly(runvarbin,2)*D), data = filtered)
+summary(Ereg7)
+
+#regression predicting employment with quadratic of runvarbin variable in independent variables and predicted employment levels as the response variable
+Ereg8 <- lm(predemp ~ poly(runvarbin,2) + D + (poly(runvarbin,2)*D), data = filtered)
+summary(Ereg8)
+
+#predicted employment values from the 2 models
+e7pred <- predict(Ereg7, newdata = filtered)
+e8pred <- predict(Ereg8, newdata = filtered)
+
+#F test for equal variances
+var.test(e7pred,e8pred,alternative = "two.sided")
+
+#two-sided t test to test the equality of the means of the 2 predictions
+t.test(e7pred, e8pred, alternative = "two.sided")
+```
+\
+We arrive at a similar conclusion if we include a quadratic or cubic polynomial of runvarbin in our regression. In particular, there is no significant difference between the results when using the actual employment data or the predicted employment data.\
+\
+```{r bandwidth sensitivity}
+#creating new datasets with new filter values
+bandwidth2 <- 400
+filtered2 <- data[which(abs(data$runvar) < bandwidth2),]
+head(filtered2)
+bandwidth3 <- 800
+filtered3 <- data[which(abs(data$runvar) < bandwidth3),]
+head(filtered3)
+bandwidth4 <- 1200
+filtered4 <- data[which(abs(data$runvar) < bandwidth4),]
+head(filtered4)
+bandwidth5 <- 4600
+filtered5 <- data[which(abs(data$runvar) < bandwidth5),]
+head(filtered5)
+bandwidth6 <- 5400
+filtered6 <- data[which(abs(data$runvar) < bandwidth6),]
+head(filtered6)
+bandwidth7 <- 9200
+filtered7 <- data[which(abs(data$runvar) < bandwidth7),]
+head(filtered7)
+bandwidth8 <- 9600
+filtered8 <- data[which(abs(data$runvar) < bandwidth8),]
+head(filtered8)
+bandwidth9 <- 10000
+filtered9 <- data[which(abs(data$runvar) < bandwidth9),]
+head(filtered9)
+
+#creating new regressions corresponding to the new data sets
+Ereg9 <- lm(emp2020 ~ runvarbin + D + (runvarbin*D), data = filtered2)
+summary(Ereg9)
+Tcoeffs_cl_E9 <- coeftest(Ereg9, vcov = vcovCL, cluster = ~runvarbin)
+Tcoeffs_cl_E9
+Ereg10 <- lm(emp2020 ~ runvarbin + D + (runvarbin*D), data = filtered3)
+summary(Ereg10)
+Tcoeffs_cl_E10 <- coeftest(Ereg10, vcov = vcovCL, cluster = ~runvarbin)
+Tcoeffs_cl_E10
+Ereg11 <- lm(emp2020 ~ runvarbin + D + (runvarbin*D), data = filtered4)
+summary(Ereg11)
+Tcoeffs_cl_E11 <- coeftest(Ereg11, vcov = vcovCL, cluster = ~runvarbin)
+Tcoeffs_cl_E11
+Ereg12 <- lm(emp2020 ~ runvarbin + D + (runvarbin*D), data = filtered5)
+summary(Ereg12)
+Tcoeffs_cl_E12 <- coeftest(Ereg12, vcov = vcovCL, cluster = ~runvarbin)
+Tcoeffs_cl_E12
+Ereg13 <- lm(emp2020 ~ runvarbin + D + (runvarbin*D), data = filtered6)
+summary(Ereg13)
+Tcoeffs_cl_E13 <- coeftest(Ereg13, vcov = vcovCL, cluster = ~runvarbin)
+Tcoeffs_cl_E13
+Ereg14 <- lm(emp2020 ~ runvarbin + D + (runvarbin*D), data = filtered7)
+summary(Ereg14)
+Tcoeffs_cl_E14 <- coeftest(Ereg14, vcov = vcovCL, cluster = ~runvarbin)
+Tcoeffs_cl_E14
+Ereg15 <- lm(emp2020 ~ runvarbin + D + (runvarbin*D), data = filtered8)
+summary(Ereg15)
+Tcoeffs_cl_E15 <- coeftest(Ereg15, vcov = vcovCL, cluster = ~runvarbin)
+Tcoeffs_cl_E15
+Ereg16 <- lm(emp2020 ~ runvarbin + D + (runvarbin*D), data = filtered9)
+summary(Ereg16)
+Tcoeffs_cl_E16 <- coeftest(Ereg16, vcov = vcovCL, cluster = ~runvarbin)
+Tcoeffs_cl_E16
+
+#estimating the standard error of the regression with the mean value of the residuals
+Ereg9SE <- abs(mean(summary(Ereg9)$residuals))
+Ereg10SE <- abs(mean(summary(Ereg10)$residuals))
+Ereg11SE <- abs(mean(summary(Ereg11)$residuals))
+Ereg12SE <- abs(mean(summary(Ereg12)$residuals))
+Ereg13SE <- abs(mean(summary(Ereg13)$residuals))
+Ereg14SE <- abs(mean(summary(Ereg14)$residuals))
+Ereg15SE <- abs(mean(summary(Ereg15)$residuals))
+Ereg16SE <- abs(mean(summary(Ereg16)$residuals))
+
+#Adding additional Band Widths
+bandwidth10 <- 1300
+filtered10 <- data[which(abs(data$runvar) < bandwidth10),]
+head(filtered10)
+Ereg17 <- lm(emp2020 ~ runvarbin + D + (runvarbin*D), data = filtered10)
+summary(Ereg17)
+Tcoeffs_cl_E17 <- coeftest(Ereg17, vcov = vcovCL, cluster = ~runvarbin)
+Tcoeffs_cl_E17
+Ereg17SE <- abs(mean(summary(Ereg17)$residuals))
+
+
+bandwidth11 <- 1400
+filtered11 <- data[which(abs(data$runvar) < bandwidth11),]
+head(filtered11)
+Ereg18 <- lm(emp2020 ~ runvarbin + D + (runvarbin*D), data = filtered11)
+summary(Ereg18)
+Tcoeffs_cl_E18 <- coeftest(Ereg18, vcov = vcovCL, cluster = ~runvarbin)
+Tcoeffs_cl_E18
+Ereg18SE <- abs(mean(summary(Ereg18)$residuals))
+
+bandwidth12 <- 1500
+filtered12 <- data[which(abs(data$runvar) < bandwidth12),]
+head(filtered12)
+Ereg19 <- lm(emp2020 ~ runvarbin + D + (runvarbin*D), data = filtered12)
+summary(Ereg19)
+Tcoeffs_cl_E19 <- coeftest(Ereg19, vcov = vcovCL, cluster = ~runvarbin)
+Tcoeffs_cl_E19
+Ereg19SE <- abs(mean(summary(Ereg19)$residuals))
+
+estimated_effect <- c(Tcoeffs_cl_E9[3,1],Tcoeffs_cl_E10[3,1],Tcoeffs_cl_E11[3,1],Tcoeffs_cl_E17[3,1],Tcoeffs_cl_E18[3,1],Tcoeffs_cl_E19[3,1],Tcoeffs_cl_E12[3,1],Tcoeffs_cl_E[3,1],Tcoeffs_cl_E13[3,1],Tcoeffs_cl_E14[3,1],Tcoeffs_cl_E15[3,1],Tcoeffs_cl_E16[3,1])
+bandwidth <- c(400,800,1200,1300,1400,1500,4600,5000,5400,9200,9600,10000)
+
+#plot of Estimated Treatment Effect and Bandwidth
+plot(bandwidth,estimated_effect, xlab = "Bandwidth in $", ylab = "Estimated Treatment Effect", main = "Estimated Treatment Effect vs Bandwidth")
+
+standard_errors <- c(Ereg9SE,Ereg10SE,Ereg11SE,Ereg17SE,Ereg18SE,Ereg19SE,Ereg12SE,abs(mean(summary(Ereg)$residuals)),Ereg13SE,Ereg14SE,Ereg15SE,Ereg16SE)
+
+#plot of Standard Error and Bandwidth
+plot(bandwidth,standard_errors, xlab = "Bandwidth in $", ylab = "Estimated Standard Error", main = "Standard Error vs Bandwidth")
+
+#p-values of coefficients of D varying by bandwidth
+Tcoeffs_cl_E9[3,4]
+Tcoeffs_cl_E10[3,4]
+Tcoeffs_cl_E11[3,4]
+Tcoeffs_cl_E17[3,4]
+Tcoeffs_cl_E18[3,4]
+Tcoeffs_cl_E19[3,4]
+Tcoeffs_cl_E12[3,4]
+Tcoeffs_cl_E[3,4]
+Tcoeffs_cl_E13[3,4]
+Tcoeffs_cl_E14[3,4]
+Tcoeffs_cl_E15[3,4]
+Tcoeffs_cl_E16[3,4]
+```
+\
+As bandwidth increases, the coefficient of D, our estimate of the effect of the poverty assistance program, decrease. The coefficient of D reaches a value of 0 when the bandwidth is about $1,500. The estimates appear to become stable around a sample size of $1,200.By considering an alpha value of 5%, the smallest bandwidth for which the estimated effect is significant is between $4,600 and $5,000.\
+\
+```{r permutation test}
+
+bootstrap <- rep(NA, 500)
+for(i in 1:500){
+  #randomizing household size
+  permtest <- filtered
+  head(permtest)
+  household <- sample((1:4), size = nrow(permtest), replace = TRUE)
+  permtest$nhhld <- household
+
+  #creating runvarn variable
+  runvar1n <- permtest$inc2019[which(permtest$nhhld == 1)] - fpl[1]
+  runvar2n <- permtest$inc2019[which(permtest$nhhld == 2)] - fpl[2]
+  runvar3n <- permtest$inc2019[which(permtest$nhhld == 3)] - fpl[3]
+  runvar4n <- permtest$inc2019[which(permtest$nhhld >= 4)] - fpl[4]
+  runvarn <- rep(NA,nrow(permtest))
+  runvarn[which(permtest$nhhld == 1)] <- runvar1n
+  runvarn[which(permtest$nhhld == 2)] <- runvar2n
+  runvarn[which(permtest$nhhld == 3)] <- runvar3n
+  runvarn[which(permtest$nhhld >= 4)] <- runvar4n
+
+  #creating runvarbinn variable
+  runvarbinn <-round_any(runvarn,100)
+  
+  #assigning new values
+  permtest$runvar <- runvarn
+  permtest$runvarbin <- runvarbinn
+
+  #running regression with new data set
+  Eregb <- lm(emp2020 ~ runvarbin + D + (runvarbin*D), data = permtest)
+  
+  Tcoeffs_cl_b <- coeftest(Eregb, vcov = vcovCL, cluster = ~runvarbin)
+  
+  #assigning coefficient of D to output 
+  bootstrap[i] <- Tcoeffs_cl_b[3,4]
+}
+```
+\
+The estimated treatment effect from the bootstrapped data:
+\
+`r format(bootstrap, scientific = FALSE)`\
+\
+By randomizing the household and therefore federal poverty limit, this negates any possible correlation between the specific values of the federal poverty limits and other factors we are considering in our employment model. 
